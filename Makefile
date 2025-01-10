@@ -13,19 +13,29 @@ $(1)
 
 endef
 
+.PHONY: all
+all: gen-all markdown-link-check markdownlint
+
 # Generate all implementations
 .PHONY: gen-all
-gen-all: gen-cpp gen-csharp gen-go gen-java gen-objc gen-openapi gen-php gen-python gen-ruby
+gen-all: gen-cpp gen-csharp gen-go gen-java gen-kotlin gen-objc gen-openapi gen-php gen-python gen-ruby
 
-OTEL_DOCKER_PROTOBUF ?= otel/build-protobuf:0.4.0
+OTEL_DOCKER_PROTOBUF ?= otel/build-protobuf:0.9.0
+BUF_DOCKER ?= bufbuild/buf:1.7.0
+
 PROTOC := docker run --rm -u ${shell id -u} -v${PWD}:${PWD} -w${PWD} ${OTEL_DOCKER_PROTOBUF} --proto_path=${PWD}
-PROTO_INCLUDES := -I/usr/include/github.com/gogo/protobuf
+BUF := docker run --rm -v "${PWD}:/workspace" -w /workspace ${BUF_DOCKER}
+# When checking for protobuf breaking changes, check against the latest release tag
+LAST_RELEASE_TAG := $(shell git tag --sort=committerdate | tail -1)
+# Options are described in https://docs.buf.build/breaking/usage#git
+BUF_AGAINST ?= "https://github.com/open-telemetry/opentelemetry-proto.git\#tag=$(LAST_RELEASE_TAG)"
 
 PROTO_GEN_CPP_DIR ?= $(GENDIR)/cpp
 PROTO_GEN_CSHARP_DIR ?= $(GENDIR)/csharp
 PROTO_GEN_GO_DIR ?= $(GENDIR)/go
 PROTO_GEN_JAVA_DIR ?= $(GENDIR)/java
 PROTO_GEN_JS_DIR ?= $(GENDIR)/js
+PROTO_GEN_KOTLIN_DIR ?= $(GENDIR)/kotlin
 PROTO_GEN_OBJC_DIR ?= $(GENDIR)/objc
 PROTO_GEN_OPENAPI_DIR ?= $(GENDIR)/openapi
 PROTO_GEN_PHP_DIR ?= $(GENDIR)/php
@@ -36,6 +46,7 @@ PROTO_GEN_RUBY_DIR ?= $(GENDIR)/ruby
 .PHONY: docker-pull
 docker-pull:
 	docker pull $(OTEL_DOCKER_PROTOBUF)
+	docker pull $(BUF_DOCKER)
 
 # Generate gRPC/Protobuf implementation for C++.
 .PHONY: gen-cpp
@@ -46,6 +57,7 @@ gen-cpp:
 	$(PROTOC) --cpp_out=./$(PROTO_GEN_CPP_DIR) --grpc-cpp_out=./$(PROTO_GEN_CPP_DIR) opentelemetry/proto/collector/trace/v1/trace_service.proto
 	$(PROTOC) --cpp_out=./$(PROTO_GEN_CPP_DIR) --grpc-cpp_out=./$(PROTO_GEN_CPP_DIR) opentelemetry/proto/collector/metrics/v1/metrics_service.proto
 	$(PROTOC) --cpp_out=./$(PROTO_GEN_CPP_DIR) --grpc-cpp_out=./$(PROTO_GEN_CPP_DIR) opentelemetry/proto/collector/logs/v1/logs_service.proto
+	$(PROTOC) --cpp_out=./$(PROTO_GEN_CPP_DIR) --grpc-cpp_out=./$(PROTO_GEN_CPP_DIR) opentelemetry/proto/collector/profiles/v1development/profiles_service.proto
 
 # Generate gRPC/Protobuf implementation for C#.
 .PHONY: gen-csharp
@@ -56,16 +68,18 @@ gen-csharp:
 	$(PROTOC) --csharp_out=./$(PROTO_GEN_CSHARP_DIR) --grpc-csharp_out=./$(PROTO_GEN_CSHARP_DIR) opentelemetry/proto/collector/trace/v1/trace_service.proto
 	$(PROTOC) --csharp_out=./$(PROTO_GEN_CSHARP_DIR) --grpc-csharp_out=./$(PROTO_GEN_CSHARP_DIR) opentelemetry/proto/collector/metrics/v1/metrics_service.proto
 	$(PROTOC) --csharp_out=./$(PROTO_GEN_CSHARP_DIR) --grpc-csharp_out=./$(PROTO_GEN_CSHARP_DIR) opentelemetry/proto/collector/logs/v1/logs_service.proto
+	$(PROTOC) --csharp_out=./$(PROTO_GEN_CSHARP_DIR) --grpc-csharp_out=./$(PROTO_GEN_CSHARP_DIR) opentelemetry/proto/collector/profiles/v1development/profiles_service.proto
 
 # Generate gRPC/Protobuf implementation for Go.
 .PHONY: gen-go
 gen-go:
 	rm -rf ./$(PROTO_GEN_GO_DIR)
 	mkdir -p ./$(PROTO_GEN_GO_DIR)
-	$(foreach file,$(PROTO_FILES),$(call exec-command,$(PROTOC) $(PROTO_INCLUDES) --gogo_out=plugins=grpc:./$(PROTO_GEN_GO_DIR) $(file)))
+	$(foreach file,$(PROTO_FILES),$(call exec-command,$(PROTOC) --go_out=plugins=grpc:./$(PROTO_GEN_GO_DIR) $(file)))
 	$(PROTOC) --grpc-gateway_out=logtostderr=true,grpc_api_configuration=opentelemetry/proto/collector/trace/v1/trace_service_http.yaml:./$(PROTO_GEN_GO_DIR) opentelemetry/proto/collector/trace/v1/trace_service.proto
 	$(PROTOC) --grpc-gateway_out=logtostderr=true,grpc_api_configuration=opentelemetry/proto/collector/metrics/v1/metrics_service_http.yaml:./$(PROTO_GEN_GO_DIR) opentelemetry/proto/collector/metrics/v1/metrics_service.proto
 	$(PROTOC) --grpc-gateway_out=logtostderr=true,grpc_api_configuration=opentelemetry/proto/collector/logs/v1/logs_service_http.yaml:./$(PROTO_GEN_GO_DIR) opentelemetry/proto/collector/logs/v1/logs_service.proto
+	$(PROTOC) --grpc-gateway_out=logtostderr=true,grpc_api_configuration=opentelemetry/proto/collector/profiles/v1development/profiles_service_http.yaml:./$(PROTO_GEN_GO_DIR) opentelemetry/proto/collector/profiles/v1development/profiles_service.proto
 
 # Generate gRPC/Protobuf implementation for Java.
 .PHONY: gen-java
@@ -73,6 +87,14 @@ gen-java:
 	rm -rf ./$(PROTO_GEN_JAVA_DIR)
 	mkdir -p ./$(PROTO_GEN_JAVA_DIR)
 	$(foreach file,$(PROTO_FILES),$(call exec-command, $(PROTOC) --java_out=./$(PROTO_GEN_JAVA_DIR) $(file)))
+
+# Generate gRPC/Protobuf implementation for Kotlin.
+.PHONY: gen-kotlin
+gen-kotlin: gen-java
+	rm -rf ./$(PROTO_GEN_KOTLIN_DIR)
+	mkdir -p ./$(PROTO_GEN_KOTLIN_DIR)
+	$(foreach file,$(PROTO_FILES),$(call exec-command, $(PROTOC) --kotlin_out=./$(PROTO_GEN_KOTLIN_DIR) $(file)))
+
 
 # Generate gRPC/Protobuf implementation for JavaScript.
 .PHONY: gen-js
@@ -83,6 +105,7 @@ gen-js:
 	$(PROTOC) --js_out=import_style=commonjs:./$(PROTO_GEN_JS_DIR) --grpc-web_out=import_style=commonjs,mode=grpcweb:./$(PROTO_GEN_JS_DIR) opentelemetry/proto/collector/trace/v1/trace_service.proto
 	$(PROTOC) --js_out=import_style=commonjs:./$(PROTO_GEN_JS_DIR) --grpc-web_out=import_style=commonjs,mode=grpcweb:./$(PROTO_GEN_JS_DIR) opentelemetry/proto/collector/metrics/v1/metrics_service.proto
 	$(PROTOC) --js_out=import_style=commonjs:./$(PROTO_GEN_JS_DIR) --grpc-web_out=import_style=commonjs,mode=grpcweb:./$(PROTO_GEN_JS_DIR) opentelemetry/proto/collector/logs/v1/logs_service.proto
+	$(PROTOC) --js_out=import_style=commonjs:./$(PROTO_GEN_JS_DIR) --grpc-web_out=import_style=commonjs,mode=grpcweb:./$(PROTO_GEN_JS_DIR) opentelemetry/proto/collector/profiles/v1development/profiles_service.proto
 
 # Generate gRPC/Protobuf implementation for Objective-C.
 .PHONY: gen-objc
@@ -93,14 +116,16 @@ gen-objc:
 	$(PROTOC) --objc_out=./$(PROTO_GEN_OBJC_DIR) --grpc-objc_out=./$(PROTO_GEN_OBJC_DIR) opentelemetry/proto/collector/trace/v1/trace_service.proto
 	$(PROTOC) --objc_out=./$(PROTO_GEN_OBJC_DIR) --grpc-objc_out=./$(PROTO_GEN_OBJC_DIR) opentelemetry/proto/collector/metrics/v1/metrics_service.proto
 	$(PROTOC) --objc_out=./$(PROTO_GEN_OBJC_DIR) --grpc-objc_out=./$(PROTO_GEN_OBJC_DIR) opentelemetry/proto/collector/logs/v1/logs_service.proto
+	$(PROTOC) --objc_out=./$(PROTO_GEN_OBJC_DIR) --grpc-objc_out=./$(PROTO_GEN_OBJC_DIR) opentelemetry/proto/collector/profiles/v1development/profiles_service.proto
 
-# Generate gRPC/Protobuf for swagger
+# Generate gRPC/Protobuf for openapi v2 (swagger)
 .PHONY: gen-openapi
 gen-openapi:
 	mkdir -p $(PROTO_GEN_OPENAPI_DIR)
-	$(PROTOC) --swagger_out=logtostderr=true,grpc_api_configuration=opentelemetry/proto/collector/trace/v1/trace_service_http.yaml:$(PROTO_GEN_OPENAPI_DIR) opentelemetry/proto/collector/trace/v1/trace_service.proto
-	$(PROTOC) --swagger_out=logtostderr=true,grpc_api_configuration=opentelemetry/proto/collector/metrics/v1/metrics_service_http.yaml:$(PROTO_GEN_OPENAPI_DIR) opentelemetry/proto/collector/metrics/v1/metrics_service.proto
-	$(PROTOC) --swagger_out=logtostderr=true,grpc_api_configuration=opentelemetry/proto/collector/logs/v1/logs_service_http.yaml:$(PROTO_GEN_OPENAPI_DIR) opentelemetry/proto/collector/logs/v1/logs_service.proto
+	$(PROTOC) --openapiv2_out=logtostderr=true,grpc_api_configuration=opentelemetry/proto/collector/trace/v1/trace_service_http.yaml:$(PROTO_GEN_OPENAPI_DIR) opentelemetry/proto/collector/trace/v1/trace_service.proto
+	$(PROTOC) --openapiv2_out=logtostderr=true,grpc_api_configuration=opentelemetry/proto/collector/metrics/v1/metrics_service_http.yaml:$(PROTO_GEN_OPENAPI_DIR) opentelemetry/proto/collector/metrics/v1/metrics_service.proto
+	$(PROTOC) --openapiv2_out=logtostderr=true,grpc_api_configuration=opentelemetry/proto/collector/logs/v1/logs_service_http.yaml:$(PROTO_GEN_OPENAPI_DIR) opentelemetry/proto/collector/logs/v1/logs_service.proto
+	$(PROTOC) --openapiv2_out=logtostderr=true,grpc_api_configuration=opentelemetry/proto/collector/profiles/v1development/profiles_service_http.yaml:$(PROTO_GEN_OPENAPI_DIR) opentelemetry/proto/collector/profiles/v1development/profiles_service.proto
 
 # Generate gRPC/Protobuf implementation for PhP.
 .PHONY: gen-php
@@ -111,6 +136,7 @@ gen-php:
 	$(PROTOC) --php_out=./$(PROTO_GEN_PHP_DIR) --grpc-php_out=./$(PROTO_GEN_PHP_DIR) opentelemetry/proto/collector/trace/v1/trace_service.proto
 	$(PROTOC) --php_out=./$(PROTO_GEN_PHP_DIR) --grpc-php_out=./$(PROTO_GEN_PHP_DIR) opentelemetry/proto/collector/metrics/v1/metrics_service.proto
 	$(PROTOC) --php_out=./$(PROTO_GEN_PHP_DIR) --grpc-php_out=./$(PROTO_GEN_PHP_DIR) opentelemetry/proto/collector/logs/v1/logs_service.proto
+	$(PROTOC) --php_out=./$(PROTO_GEN_PHP_DIR) --grpc-php_out=./$(PROTO_GEN_PHP_DIR) opentelemetry/proto/collector/profiles/v1development/profiles_service.proto
 
 # Generate gRPC/Protobuf implementation for Python.
 .PHONY: gen-python
@@ -121,6 +147,7 @@ gen-python:
 	$(PROTOC) --python_out=./$(PROTO_GEN_PYTHON_DIR) --grpc-python_out=./$(PROTO_GEN_PYTHON_DIR) opentelemetry/proto/collector/trace/v1/trace_service.proto
 	$(PROTOC) --python_out=./$(PROTO_GEN_PYTHON_DIR) --grpc-python_out=./$(PROTO_GEN_PYTHON_DIR) opentelemetry/proto/collector/metrics/v1/metrics_service.proto
 	$(PROTOC) --python_out=./$(PROTO_GEN_PYTHON_DIR) --grpc-python_out=./$(PROTO_GEN_PYTHON_DIR) opentelemetry/proto/collector/logs/v1/logs_service.proto
+	$(PROTOC) --python_out=./$(PROTO_GEN_PYTHON_DIR) --grpc-python_out=./$(PROTO_GEN_PYTHON_DIR) opentelemetry/proto/collector/profiles/v1development/profiles_service.proto
 
 # Generate gRPC/Protobuf implementation for Ruby.
 .PHONY: gen-ruby
@@ -131,3 +158,31 @@ gen-ruby:
 	$(PROTOC) --ruby_out=./$(PROTO_GEN_RUBY_DIR) --grpc-ruby_out=./$(PROTO_GEN_RUBY_DIR) opentelemetry/proto/collector/trace/v1/trace_service.proto
 	$(PROTOC) --ruby_out=./$(PROTO_GEN_RUBY_DIR) --grpc-ruby_out=./$(PROTO_GEN_RUBY_DIR) opentelemetry/proto/collector/metrics/v1/metrics_service.proto
 	$(PROTOC) --ruby_out=./$(PROTO_GEN_RUBY_DIR) --grpc-ruby_out=./$(PROTO_GEN_RUBY_DIR) opentelemetry/proto/collector/logs/v1/logs_service.proto
+	$(PROTOC) --ruby_out=./$(PROTO_GEN_RUBY_DIR) --grpc-ruby_out=./$(PROTO_GEN_RUBY_DIR) opentelemetry/proto/collector/profiles/v1development/profiles_service.proto
+
+# The Profiling protocol is still development. So it is excluded from the breaking-change check.
+.PHONY: breaking-change
+breaking-change:
+	$(BUF) breaking --against $(BUF_AGAINST) --config '{"version":"v1","breaking":{"ignore":["opentelemetry/proto/profiles", "opentelemetry/proto/collector/profiles"]}}' $(BUF_FLAGS)
+
+
+ALL_DOCS := $(shell find . -type f -name '*.md' -not -path './.github/*' -not -path './node_modules/*' | sort)
+
+.PHONY: markdown-link-check
+markdown-link-check:
+	docker run --rm \
+		--mount 'type=bind,source=$(PWD),target=/home/repo' \
+		lycheeverse/lychee \
+		--config home/repo/.lychee.toml \
+		--root-dir /home/repo \
+		-v \
+		home/repo
+
+.PHONY: markdownlint
+markdownlint:
+	@if ! npm ls markdownlint; then npm install; fi
+	@for f in $(ALL_DOCS); do \
+		echo $$f; \
+		npx --no -p markdownlint-cli markdownlint -c .markdownlint.yaml $$f \
+			|| exit 1; \
+	done
